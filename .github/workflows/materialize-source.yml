@@ -29,9 +29,15 @@ jobs:
           set -euo pipefail
           rm -rf .materialize-source
           mkdir -p .materialize-source
-          7z x -y QtNFSWTuningCalculatorLatest.rar -o.materialize-source >/dev/null
+          archive="QtNFSWTuningCalculatorLatest.rar"
+          if [ ! -f "$archive" ]; then
+            echo "RAR not present in current tree; restoring it from Git history."
+            git cat-file blob 009f4684e33d6d3bc1169989713e251cb0926da1 > .materialize-source/original.rar
+            archive=".materialize-source/original.rar"
+          fi
+          7z x -y "$archive" -o.materialize-source/extracted >/dev/null
 
-          project_file="$(find .materialize-source -type f -name QtNFSWTuningCalculator.pro -print -quit)"
+          project_file="$(find .materialize-source/extracted -type f -name QtNFSWTuningCalculator.pro -print -quit)"
           if [ -z "$project_file" ]; then
             echo "QtNFSWTuningCalculator.pro was not found in the RAR archive."
             exit 1
