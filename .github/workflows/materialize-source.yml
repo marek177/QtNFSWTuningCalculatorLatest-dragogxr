@@ -1,0 +1,97 @@
+name: Materialize Qt source tree
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/materialize-source.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install archive tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+
+      - name: Extract original source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .materialize-source
+          mkdir -p .materialize-source
+          7z x -y QtNFSWTuningCalculatorLatest.rar -o.materialize-source >/dev/null
+
+          project_file="$(find .materialize-source -type f -name QtNFSWTuningCalculator.pro -print -quit)"
+          if [ -z "$project_file" ]; then
+            echo "QtNFSWTuningCalculator.pro was not found in the RAR archive."
+            exit 1
+          fi
+          source_root="$(dirname "$project_file")"
+          test -d "$source_root/src"
+
+          rm -rf src
+          cp -a "$source_root/src" ./src
+          cp "$source_root/QtNFSWTuningCalculator.pro" ./QtNFSWTuningCalculator.pro
+
+      - name: Normalize source line endings
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          paths = [Path("QtNFSWTuningCalculator.pro")]
+          paths += [p for p in Path("src").rglob("*") if p.is_file()]
+          for p in paths:
+              data = p.read_bytes()
+              if b"\0" in data:
+                  continue
+              p.write_bytes(data.replace(b"\r\n", b"\n").replace(b"\r", b"\n"))
+          PY
+
+      - name: Apply NFSWPerformanceTool algorithm patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --whitespace=nowarn updates/NFSWPerformanceTool-algorithm/01-core.patch
+          git apply --whitespace=nowarn updates/NFSWPerformanceTool-algorithm/02-car-data.patch
+          git apply --whitespace=nowarn updates/NFSWPerformanceTool-algorithm/03-analyzer.patch
+          git apply --whitespace=nowarn updates/NFSWPerformanceTool-algorithm/04-maximizer.patch
+          git apply --whitespace=nowarn updates/NFSWPerformanceTool-algorithm/05-ui-diagrams.patch
+
+      - name: Verify source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f src/main.cpp
+          test -f src/Classes/GameMath.cpp
+          test -f src/Classes/NFSWCarDataRows4.inc
+          test -f src/Tab/Threads/TrdAnalyze.cpp
+          test -f src/Tab/Threads/TrdMaximize.cpp
+          count="$(find src -type f \( -name '*.cpp' -o -name '*.h' -o -name '*.inc' \) | wc -l)"
+          echo "Materialized source files: $count"
+          test "$count" -ge 200
+
+      - name: Commit materialized source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .materialize-source
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src QtNFSWTuningCalculator.pro
+          if git diff --cached --quiet; then
+            echo "No source changes to commit."
+            exit 0
+          fi
+          git commit -m "Add complete Qt source tree with NFSWPerformanceTool algorithm"
+          git push origin HEAD:main
