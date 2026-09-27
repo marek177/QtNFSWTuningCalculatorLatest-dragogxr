@@ -37,9 +37,13 @@ jobs:
           fi
           7z x -y "$archive" -o.materialize-source/extracted >/dev/null
 
+          echo "Extracted archive contents (first 200 files):"
+          find .materialize-source/extracted -type f | sort | head -200
           project_file="$(find .materialize-source/extracted -type f -name QtNFSWTuningCalculator.pro -print -quit)"
           if [ -z "$project_file" ]; then
             echo "QtNFSWTuningCalculator.pro was not found in the RAR archive."
+            echo "Nested archives:"
+            find .materialize-source/extracted -type f \\( -iname '*.rar' -o -iname '*.zip' -o -iname '*.7z' \\) -print || true
             exit 1
           fi
           source_root="$(dirname "$project_file")"
