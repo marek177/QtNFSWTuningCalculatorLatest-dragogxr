@@ -1,0 +1,359 @@
+--- a/QtNFSWTuningCalculator.pro
++++ b/QtNFSWTuningCalculator.pro
+@@ -21,6 +21,8 @@
+     src/Classes/CAttributes.h \
+     src/Classes/CBrand.h \
+     src/Classes/CCar.h \
++    src/Classes/GameMath.h \
++    src/Classes/NFSWCarData.h \
+     src/Classes/CPart.h \
+     src/Classes/CTuning.h \
+     src/Classes/EClass.h \
+@@ -127,6 +129,8 @@
+     src/Classes/CAttributes.cpp \
+     src/Classes/CBrand.cpp \
+     src/Classes/CCar.cpp \
++    src/Classes/GameMath.cpp \
++    src/Classes/NFSWCarData.cpp \
+     src/Classes/CPart.cpp \
+     src/Classes/CTuning.cpp \
+     src/Classes/EClass.cpp \
+--- a/src/Classes/CCar.cpp
++++ b/src/Classes/CCar.cpp
+@@ -17,6 +17,7 @@
+  ********************************************************************** */
+ 
+ #include "CCar.h"
++#include "NFSWCarData.h"
+ 
+ #include <QMessageBox>
+ 
+@@ -63,6 +64,13 @@
+ 	_topspeed = 0;
+ 	_acceleration = 0;
+ 	_handling = 0;
++	_hasNFSWPerformanceModel = false;
++	for(int i = 0; i < 4; ++i)
++	{
++		_nfswTopspeed[i] = 0.0f;
++		_nfswAcceleration[i] = 0.0f;
++		_nfswHandling[i] = 0.0f;
++	}
+ 	_images.clear();
+ 	_id = 0;
+ 	_value = 0;
+@@ -140,11 +148,27 @@
+ 	_acceleration = a;
+ 	_handling = h;
+ 
++	_hasNFSWPerformanceModel = true;
++	for(int i = 0; i < 4; ++i)
++	{
++		if( !file.read< tValueF >(QString("NFSWTopSpeed%1").arg(i), _nfswTopspeed[i], 0.0f) )
++			_hasNFSWPerformanceModel = false;
++		if( !file.read< tValueF >(QString("NFSWAcceleration%1").arg(i), _nfswAcceleration[i], 0.0f) )
++			_hasNFSWPerformanceModel = false;
++		if( !file.read< tValueF >(QString("NFSWHandling%1").arg(i), _nfswHandling[i], 0.0f) )
++			_hasNFSWPerformanceModel = false;
++	}
++
+ 	if( !file.read< tID >(CARID, _id, 0) )
+ 	{
+ 		r += QString(" ") + CARID;
+ 		ok = false;
+ 	}
++
++	// GitHub/source builds keep the recovered 12-value table compiled in.
++	// Values present in a .car file still take precedence.
++	if( !_hasNFSWPerformanceModel )
++		_hasNFSWPerformanceModel = NFSWCarData::Lookup(_id, _nfswTopspeed, _nfswAcceleration, _nfswHandling);
+ 
+ 	QString id;
+ 	if( !file.read< QString >(CARACQUIRABLE, id, "") )
+@@ -225,6 +249,24 @@
+ 
+ 	return Topspeed();
+ }
++bool CCar::HasNFSWPerformanceModel() const
++{
++	return _hasNFSWPerformanceModel;
++}
++const tValueF& CCar::NFSWBase(const EAttribute& _Attribute, const int& _Index) const
++{
++	int idx = _Index;
++	if( idx < 0 ) idx = 0;
++	if( idx > 3 ) idx = 3;
++
++	switch( _Attribute )
++	{
++		case ( aACCELERATION ): return _nfswAcceleration[idx];
++		case ( aHANDLING ): return _nfswHandling[idx];
++		case ( aTOPSPEED ):
++		default: return _nfswTopspeed[idx];
++	}
++}
+ const QString& CCar::Image(const int& _Index) const
+ {
+ 	if( _Index < 0 || _images.size() <= _Index )
+--- a/src/Classes/CCar.h
++++ b/src/Classes/CCar.h
+@@ -66,6 +66,10 @@
+ 		const tValue& Acceleration() const;
+ 		const tValue& Handling() const;
+ 		const tValue& Attribute(const EAttribute& _Attribute) const;
++
++		// 12-value performance model used by the newer NFSW algorithm.
++		bool HasNFSWPerformanceModel() const;
++		const tValueF& NFSWBase(const EAttribute& _Attribute, const int& _Index) const;
+ 		const QString& Image(const int& _Index = 0) const;
+ 		const Acquirable& IsAcquirable() const;
+ 		QString AcquirableImageName() const;
+@@ -96,6 +100,10 @@
+ 		tValue _topspeed;
+ 		tValue _acceleration;
+ 		tValue _handling;
++		tValueF _nfswTopspeed[4];
++		tValueF _nfswAcceleration[4];
++		tValueF _nfswHandling[4];
++		bool _hasNFSWPerformanceModel;
+ 		tID _id;
+ 		Acquirable _acquirable;
+ 		tIGC _value;
+--- a/src/Classes/GameMath.cpp
++++ b/src/Classes/GameMath.cpp
+@@ -0,0 +1,144 @@
++#include "GameMath.h"
++
++#include "CCar.h"
++#include "CTuning.h"
++#include "CPart.h"
++
++namespace
++{
++    const float kOneHundredth = 0.01f;
++    // float32 constant used by the recovered NFSW calculation (2/3).
++    const float kTwoThirds = 0.6666666865348816f;
++
++    GameMath::Weights Normalize(float h, float a, float t)
++    {
++        float total = t + a;
++        total += h;
++        float denom = total * kTwoThirds;
++        denom += 1.0f;
++        const float fragment = 1.0f / denom;
++
++        GameMath::Weights w;
++        w.handling = h * fragment;
++        w.acceleration = a * fragment;
++        w.topspeed = t * fragment;
++        w.stock = 1.0f - w.handling;
++        w.stock -= w.acceleration;
++        w.stock -= w.topspeed;
++        return w;
++    }
++
++    float Blend(const CCar* car, const EAttribute attr, const GameMath::Weights& w)
++    {
++        float value = car->NFSWBase(attr, 0) * w.stock;
++        value += car->NFSWBase(attr, 1) * w.handling;
++        value += car->NFSWBase(attr, 2) * w.acceleration;
++        value += car->NFSWBase(attr, 3) * w.topspeed;
++        return value;
++    }
++
++    tValue Display(const float v)
++    {
++        // NFSW uses CVTTSS2SI: truncate toward zero.
++        if( v <= 0.0f )
++            return 0;
++        if( v >= 65535.0f )
++            return 65535;
++        return (tValue)((int)v);
++    }
++
++    GameMath::Result OldFallback(const CCar* car, int t, int a, int h)
++    {
++        GameMath::Result r;
++        r.weights = GameMath::WeightsFromSums(t, a, h);
++        const float maxT = 700.0f;
++        r.rawTopspeed = ( maxT - car->Topspeed() ) * t / 100.0f + car->Topspeed();
++        r.rawAcceleration = ( maxT - car->Acceleration() ) * a / 100.0f + car->Acceleration();
++        r.rawHandling = ( maxT - car->Handling() ) * h / 100.0f + car->Handling();
++        r.topspeed = Display(r.rawTopspeed);
++        r.acceleration = Display(r.rawAcceleration);
++        r.handling = Display(r.rawHandling);
++        return r;
++    }
++}
++
++GameMath::Weights GameMath::WeightsFromSums(int _Topspeed, int _Acceleration, int _Handling)
++{
++    const float h = _Handling * kOneHundredth;
++    const float a = _Acceleration * kOneHundredth;
++    const float t = _Topspeed * kOneHundredth;
++    return Normalize(h, a, t);
++}
++
++GameMath::Weights GameMath::WeightsFromTuning(const CTuning* _Tuning)
++{
++    float h = 0.0f, a = 0.0f, t = 0.0f;
++    if( !_Tuning )
++        return Normalize(h, a, t);
++
++    for(IType i = ITypeBegin; i <= ITypeEnd; ++i)
++    {
++        const CPart* p = _Tuning->Part((EType)i);
++        if( !p )
++            continue;
++        // Deliberately accumulate six float32 contributions sequentially, as the game does.
++        h += p->Handling() * kOneHundredth;
++        a += p->Acceleration() * kOneHundredth;
++        t += p->Topspeed() * kOneHundredth;
++    }
++    return Normalize(h, a, t);
++}
++
++GameMath::Result GameMath::CalculateFromSums(const CCar* _Car, int _Topspeed, int _Acceleration, int _Handling)
++{
++    if( !_Car )
++    {
++        Result empty = { 0, 0, 0, 0, 0, 0, WeightsFromSums(0, 0, 0) };
++        return empty;
++    }
++
++    if( !_Car->HasNFSWPerformanceModel() )
++        return OldFallback(_Car, _Topspeed, _Acceleration, _Handling);
++
++    Result r;
++    r.weights = WeightsFromSums(_Topspeed, _Acceleration, _Handling);
++    r.rawTopspeed = Blend(_Car, aTOPSPEED, r.weights);
++    r.rawAcceleration = Blend(_Car, aACCELERATION, r.weights);
++    r.rawHandling = Blend(_Car, aHANDLING, r.weights);
++    r.topspeed = Display(r.rawTopspeed);
++    r.acceleration = Display(r.rawAcceleration);
++    r.handling = Display(r.rawHandling);
++    return r;
++}
++
++GameMath::Result GameMath::Calculate(const CCar* _Car, const CTuning* _Tuning)
++{
++    if( !_Car )
++    {
++        Result empty = { 0, 0, 0, 0, 0, 0, WeightsFromSums(0, 0, 0) };
++        return empty;
++    }
++
++    if( !_Tuning )
++        return CalculateFromSums(_Car, 0, 0, 0);
++
++    if( !_Car->HasNFSWPerformanceModel() )
++        return OldFallback(_Car, _Tuning->Topspeed(), _Tuning->Acceleration(), _Tuning->Handling());
++
++    Result r;
++    r.weights = WeightsFromTuning(_Tuning);
++    r.rawTopspeed = Blend(_Car, aTOPSPEED, r.weights);
++    r.rawAcceleration = Blend(_Car, aACCELERATION, r.weights);
++    r.rawHandling = Blend(_Car, aHANDLING, r.weights);
++    r.topspeed = Display(r.rawTopspeed);
++    r.acceleration = Display(r.rawAcceleration);
++    r.handling = Display(r.rawHandling);
++    return r;
++}
++
++GameMath::Result GameMath::Calculate(const CCar* _Car, const CPart* _Engine, const CPart* _Induction,
++        const CPart* _Transmission, const CPart* _Suspension, const CPart* _Brakes, const CPart* _Tires)
++{
++    CTuning tuning(_Engine, _Induction, _Transmission, _Suspension, _Brakes, _Tires);
++    return Calculate(_Car, &tuning);
++}
+--- a/src/Classes/GameMath.h
++++ b/src/Classes/GameMath.h
+@@ -0,0 +1,41 @@
++#ifndef __GAMEMATH_H__
++#define __GAMEMATH_H__
++
++#include "EAttribute.h"
++#include "TypeDefinitions.h"
++
++class CCar;
++class CTuning;
++class CPart;
++
++namespace GameMath
++{
++    struct Weights
++    {
++        float handling;
++        float acceleration;
++        float topspeed;
++        float stock;
++    };
++
++    struct Result
++    {
++        float rawTopspeed;
++        float rawAcceleration;
++        float rawHandling;
++        tValue topspeed;
++        tValue acceleration;
++        tValue handling;
++        Weights weights;
++    };
++
++    Weights WeightsFromSums(int _Topspeed, int _Acceleration, int _Handling);
++    Weights WeightsFromTuning(const CTuning* _Tuning);
++
++    Result CalculateFromSums(const CCar* _Car, int _Topspeed, int _Acceleration, int _Handling);
++    Result Calculate(const CCar* _Car, const CTuning* _Tuning);
++    Result Calculate(const CCar* _Car, const CPart* _Engine, const CPart* _Induction,
++            const CPart* _Transmission, const CPart* _Suspension, const CPart* _Brakes, const CPart* _Tires);
++}
++
++#endif
+--- a/src/Classes/NFSWCarData.cpp
++++ b/src/Classes/NFSWCarData.cpp
+@@ -0,0 +1,30 @@
++#include "NFSWCarData.h"
++
++namespace
++{
++struct Row { tID id; tValueF v[12]; };
++static const Row kRows[] =
++{
++#include "NFSWCarDataRows1.inc"
++#include "NFSWCarDataRows2.inc"
++#include "NFSWCarDataRows3.inc"
++#include "NFSWCarDataRows4.inc"
++};
++}
++
++bool NFSWCarData::Lookup(const tID& id, tValueF topspeed[4], tValueF acceleration[4], tValueF handling[4])
++{
++    const int count = sizeof(kRows) / sizeof(kRows[0]);
++    for(int i = 0; i < count; ++i)
++    {
++        if(kRows[i].id != id) continue;
++        for(int n = 0; n < 4; ++n)
++        {
++            topspeed[n] = kRows[i].v[n];
++            acceleration[n] = kRows[i].v[4 + n];
++            handling[n] = kRows[i].v[8 + n];
++        }
++        return true;
++    }
++    return false;
++}
+--- a/src/Classes/NFSWCarData.h
++++ b/src/Classes/NFSWCarData.h
+@@ -0,0 +1,11 @@
++#ifndef __NFSWCARDATA_H__
++#define __NFSWCARDATA_H__
++
++#include "TypeDefinitions.h"
++
++namespace NFSWCarData
++{
++    bool Lookup(const tID& id, tValueF topspeed[4], tValueF acceleration[4], tValueF handling[4]);
++}
++
++#endif /* __NFSWCARDATA_H__ */
