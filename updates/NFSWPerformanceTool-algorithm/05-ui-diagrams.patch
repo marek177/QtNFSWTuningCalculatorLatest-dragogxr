@@ -1,0 +1,107 @@
+--- a/src/Tab/WdgTab.cpp
++++ b/src/Tab/WdgTab.cpp
+@@ -38,6 +38,7 @@
+ #include "../MsgDialogs.h"
+ #include "../Classes/CBrand.h"
+ #include "../Classes/CCar.h"
++#include "../Classes/GameMath.h"
+ #include "../Classes/CPart.h"
+@@ -968,10 +969,11 @@
+ 	if( PartsWdg() && CarWdg() )
+ 	{
+ 		const CCar* car = CarWdg()->CurrentCar();
+-
+-		_Topspeed = utils::ComputeStatF(1, car->Topspeed(), PartsWdg()->Topspeed());
+-		_Acceleration = utils::ComputeStatF(1, car->Acceleration(), PartsWdg()->Acceleration());
+-		_Handling = utils::ComputeStatF(1, car->Handling(), PartsWdg()->Handling());
++		const GameMath::Result result = GameMath::Calculate(car, PartsWdg()->CurrentTuning());
++		_Topspeed = result.rawTopspeed;
++		_Acceleration = result.rawAcceleration;
++		_Handling = result.rawHandling;
+ 	}
+ }
+--- a/src/Tab/WdgTabMaximizer.cpp
++++ b/src/Tab/WdgTabMaximizer.cpp
+@@ -34,6 +34,7 @@
+ #include "../Classes/CCar.h"
+ #include "../Classes/CPart.h"
+ #include "../Classes/CTuning.h"
++#include "../Classes/GameMath.h"
+@@ -85,13 +86,9 @@
+ void WdgTabMaximizer::UpdateAttributes()
+ {
+-	const float tier = 1;
+-	const unsigned int t = utils::ComputeStatI(tier, CarWdg()->Topspeed(), _wdgParts->Topspeed());
+-	const unsigned int a = utils::ComputeStatI(tier, CarWdg()->Acceleration(), _wdgParts->Acceleration());
+-	const unsigned int h = utils::ComputeStatI(tier, CarWdg()->Handling(), _wdgParts->Handling());
+-	_wdgAttributes->SetAttributes(t, a, h);
++	const GameMath::Result result = GameMath::Calculate(CarWdg()->CurrentCar(), _wdgParts->CurrentTuning());
++	_wdgAttributes->SetAttributes(result.topspeed, result.acceleration, result.handling);
+ 	emit ChangedAttribute();
+ }
+--- a/src/Tab/WdgTabTuner.cpp
++++ b/src/Tab/WdgTabTuner.cpp
+@@ -38,6 +38,7 @@
+ #include "../Classes/CCar.h"
+ #include "../Classes/CPart.h"
++#include "../Classes/GameMath.h"
+@@ -105,13 +106,9 @@
+ void WdgTabTuner::UpdateAttributes()
+ {
+-	const tTierF tier = 1;
+-	const tValue t = utils::ComputeStatI(tier, CarWdg()->Topspeed(), _wdgParts->Topspeed());
+-	const tValue a = utils::ComputeStatI(tier, CarWdg()->Acceleration(), _wdgParts->Acceleration());
+-	const tValue h = utils::ComputeStatI(tier, CarWdg()->Handling(), _wdgParts->Handling());
+-	_wdgAttributes->SetAttributes(t, a, h);
++	const GameMath::Result result = GameMath::Calculate(CarWdg()->CurrentCar(), _wdgParts->CurrentTuning());
++	_wdgAttributes->SetAttributes(result.topspeed, result.acceleration, result.handling);
+ 	emit ChangedAttribute();
+ }
+--- a/src/Widgets/DlgCompareDiagram.cpp
++++ b/src/Widgets/DlgCompareDiagram.cpp
+@@ -36,6 +36,7 @@
+ #include "../Classes/CBrand.h"
+ #include "../Classes/CCar.h"
++#include "../Classes/GameMath.h"
+@@ -135,9 +136,10 @@
+-	const tValueF curTopspeed1 = utils::ComputeStatF(1, car1->Topspeed(), tuning1->Topspeed());
+-	const tValueF curAcceleration1 = utils::ComputeStatF(1, car1->Acceleration(), tuning1->Acceleration());
+-	const tValueF curHandling1 = utils::ComputeStatF(1, car1->Handling(), tuning1->Handling());
++	const GameMath::Result cur1 = GameMath::Calculate(car1, tuning1);
++	const tValueF curTopspeed1 = cur1.rawTopspeed;
++	const tValueF curAcceleration1 = cur1.rawAcceleration;
++	const tValueF curHandling1 = cur1.rawHandling;
+@@ -150,9 +152,10 @@
+-	const tValueF curTopspeed2 = utils::ComputeStatF(1, car2->Topspeed(), tuning2->Topspeed());
+-	const tValueF curAcceleration2 = utils::ComputeStatF(1, car2->Acceleration(), tuning2->Acceleration());
+-	const tValueF curHandling2 = utils::ComputeStatF(1, car2->Handling(), tuning2->Handling());
++	const GameMath::Result cur2 = GameMath::Calculate(car2, tuning2);
++	const tValueF curTopspeed2 = cur2.rawTopspeed;
++	const tValueF curAcceleration2 = cur2.rawAcceleration;
++	const tValueF curHandling2 = cur2.rawHandling;
+--- a/src/Widgets/DlgDiagram.cpp
++++ b/src/Widgets/DlgDiagram.cpp
+@@ -36,6 +36,7 @@
+ #include "../Classes/CBrand.h"
+ #include "../Classes/CCar.h"
++#include "../Classes/GameMath.h"
+@@ -76,9 +77,8 @@
+-	const tValueF value = utils::OverallF(utils::ComputeStatF(1, _Car->Topspeed(), _Topspeed),
+-			utils::ComputeStatF(1, _Car->Acceleration(), _Acceleration),
+-			utils::ComputeStatF(1, _Car->Handling(), _Handling));
++	const GameMath::Result perf = GameMath::Calculate(_Car, _Engine, _Induction, _Transmission, _Suspension, _Brakes, _Tires);
++	const tValueF value = utils::OverallF(perf.rawTopspeed, perf.rawAcceleration, perf.rawHandling);
+--- a/src/Widgets/DlgTuningDiagram.cpp
++++ b/src/Widgets/DlgTuningDiagram.cpp
+@@ -36,6 +36,7 @@
+ #include "../Classes/CBrand.h"
+ #include "../Classes/CCar.h"
++#include "../Classes/GameMath.h"
+@@ -97,9 +98,10 @@
+-	const tValueF curTopspeed = utils::ComputeStatF(1, car->Topspeed(), tuning->Topspeed());
+-	const tValueF curAcceleration = utils::ComputeStatF(1, car->Acceleration(), tuning->Acceleration());
+-	const tValueF curHandling = utils::ComputeStatF(1, car->Handling(), tuning->Handling());
++	const GameMath::Result cur = GameMath::Calculate(car, tuning);
++	const tValueF curTopspeed = cur.rawTopspeed;
++	const tValueF curAcceleration = cur.rawAcceleration;
++	const tValueF curHandling = cur.rawHandling;
