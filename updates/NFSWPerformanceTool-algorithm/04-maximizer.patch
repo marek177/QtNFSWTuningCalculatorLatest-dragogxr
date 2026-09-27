@@ -1,0 +1,126 @@
+--- a/src/Tab/Threads/TrdMaximize.cpp
++++ b/src/Tab/Threads/TrdMaximize.cpp
+@@ -18,10 +18,13 @@
+ #include "TrdMaximize.h"
++#include <QMap>
+ #include "../Menus/MnuPartConstraints.h"
+ #include "../../Classes/CBrand.h"
+ #include "../../Classes/CCar.h"
+ #include "../../Classes/CPart.h"
++#include "../../Classes/GameMath.h"
+@@ -29,6 +32,25 @@
+ void TrdMaximize::GetBestParts()
+ {
++	if( Car() && Car()->HasNFSWPerformanceModel() )
++	{
++		if( _constraint )
++		{
++			const CPart* p = 0;
++			p = _constraint->Engine(); if( p && !p->IsStock() ) { Engines()->clear(); Engines()->append(p); }
++			p = _constraint->Induction(); if( p && !p->IsStock() ) { Inductions()->clear(); Inductions()->append(p); }
++			p = _constraint->Transmission(); if( p && !p->IsStock() ) { Transmissions()->clear(); Transmissions()->append(p); }
++			p = _constraint->Suspension(); if( p && !p->IsStock() ) { Suspensions()->clear(); Suspensions()->append(p); }
++			p = _constraint->Brakes(); if( p && !p->IsStock() ) { Brakes()->clear(); Brakes()->append(p); }
++			p = _constraint->Tires(); if( p && !p->IsStock() ) { Tires()->clear(); Tires()->append(p); }
++		}
++		return;
++	}
+@@ -47,38 +69,22 @@
+ }
+ Trd::eCOMPARE TrdMaximize::Eval(const tPercent& _Topspeed, const tPercent& _Acceleration, const tPercent& _Handling,
+ 		const CPart* _Engine, const CPart* _Induction, const CPart* _Transmission, const CPart* _Suspension,
+ 		const CPart* _Brakes, const CPart* _Tires)
+ {
++	const GameMath::Result perf = GameMath::Calculate(Car(), _Engine, _Induction, _Transmission, _Suspension, _Brakes, _Tires);
+ 	tValue value = 0;
+ 	switch( _maximizedAttribute )
+ 	{
+-		case ( aTOPSPEED ): { value = utils::ComputeStatI(1, Car()->Topspeed(), _Topspeed); break; }
+-		case ( aACCELERATION ): { value = utils::ComputeStatI(1, Car()->Acceleration(), _Acceleration); break; }
+-		case ( aHANDLING ): { value = utils::ComputeStatI(1, Car()->Handling(), _Handling); break; }
+-		default:
+-		{
+-			value = utils::ComputeStatI(1, Car()->Topspeed(), _Topspeed);
+-			value += utils::ComputeStatI(1, Car()->Acceleration(), _Acceleration);
+-			value += utils::ComputeStatI(1, Car()->Handling(), _Handling);
+-			break;
+-		}
++		case ( aTOPSPEED ): value = perf.topspeed; break;
++		case ( aACCELERATION ): value = perf.acceleration; break;
++		case ( aHANDLING ): value = perf.handling; break;
++		default: value = perf.topspeed + perf.acceleration + perf.handling; break;
+ 	}
+@@ -92,10 +98,8 @@
+ 		NewSolutions(_Engine, _Induction, _Transmission, _Suspension, _Brakes, _Tires);
+ 		return cLARGER;
+ 	}
+-	else
+-	{
+-		return cSMALLER;
+-	}
++	return cSMALLER;
+ }
+@@ -169,6 +173,63 @@
+ }
++
++void TrdMaximize::MaximizeNFSWModel()
++{
++	struct Partial
++	{
++		int t, a, h;
++		const CPart* parts[6];
++		Partial() : t(0), a(0), h(0) { for(int i = 0; i < 6; ++i) parts[i] = 0; }
++	};
++	QVector< const CPart* >* lists[6] = { Engines(), Inductions(), Transmissions(), Suspensions(), Brakes(), Tires() };
++	QMap< QString, Partial > current;
++	Partial first;
++	current.insert("0,0,0", first);
++	for(int slot = 0; slot < 6; ++slot)
++	{
++		QMap< QString, Partial > next;
++		for(QMap< QString, Partial >::const_iterator it = current.begin(); it != current.end(); ++it)
++		{
++			const Partial& base = it.value();
++			for(int p = 0; p < lists[slot]->size(); ++p)
++			{
++				if( !GoOn() ) return;
++				const CPart* part = lists[slot]->at(p);
++				Partial n = base;
++				n.t += part->Topspeed();
++				n.a += part->Acceleration();
++				n.h += part->Handling();
++				n.parts[slot] = part;
++				const QString key = QString("%1,%2,%3").arg(n.t).arg(n.a).arg(n.h);
++				if( !next.contains(key) ) next.insert(key, n);
++			}
++		}
++		current = next;
++		emit Progress(( slot + 1 ) / 7.0f);
++	}
++	int done = 0;
++	const int total = qMax(1, current.size());
++	for(QMap< QString, Partial >::const_iterator it = current.begin(); it != current.end(); ++it)
++	{
++		if( !GoOn() ) return;
++		const Partial& n = it.value();
++		Eval((tPercent)n.t, (tPercent)n.a, (tPercent)n.h,
++			n.parts[0], n.parts[1], n.parts[2], n.parts[3], n.parts[4], n.parts[5]);
++		++done;
++		if( ( done & 255 ) == 0 ) emit Progress(6.0f / 7.0f + ( done / (float)total ) / 7.0f);
++	}
++	emit Progress(1.0f);
++}
+@@ -215,7 +276,10 @@
+ 	_currentMaximum = 0;
+-	Maximize();
++	if( Car() && Car()->HasNFSWPerformanceModel() )
++		MaximizeNFSWModel();
++	else
++		Maximize();
+ 	SelectSolutions();
+ }
+--- a/src/Tab/Threads/TrdMaximize.h
++++ b/src/Tab/Threads/TrdMaximize.h
+@@ -40,6 +40,7 @@
+ 		void Maximize();
++		void MaximizeNFSWModel();

@@ -1,0 +1,163 @@
+--- a/src/Tab/Threads/TrdAnalyze.cpp
++++ b/src/Tab/Threads/TrdAnalyze.cpp
+@@ -22,6 +22,7 @@
+ #include "../../Classes/CBrand.h"
+ #include "../../Classes/CCar.h"
+ #include "../../Classes/CPart.h"
++#include "../../Classes/GameMath.h"
+@@ -29,50 +30,124 @@
+ Trd::eCOMPARE TrdAnalyze::Eval(const tPercent& _Topspeed, const tPercent& _Acceleration, const tPercent& _Handling)
+ {
++	if( Car() && Car()->HasNFSWPerformanceModel() )
++		return CanReachAggregate(_Topspeed, _Acceleration, _Handling) ? cSMALLER : cLARGER;
++
+ 	if( _Topspeed == _pTopspeed && _Acceleration == _pAcceleration && _Handling == _pHandling )
+-	{
+ 		return cEQUAL;
+-	}
+ 	else if( _Topspeed > _pTopspeed || _Acceleration > _pAcceleration || _Handling > _pHandling )
+-	{
+ 		return cLARGER;
+-	}
+-	else
+-	{
+-		return cSMALLER;
+-	}
++	return cSMALLER;
+ }
+ Trd::eCOMPARE TrdAnalyze::Eval(const tPercent& _Topspeed, const tPercent& _Acceleration, const tPercent& _Handling,
+ 		const CPart* _Engine, const CPart* _Induction, const CPart* _Transmission, const CPart* _Suspension,
+ 		const CPart* _Brakes, const CPart* _Tires)
+ {
++	if( Car() && Car()->HasNFSWPerformanceModel() )
++	{
++		const GameMath::Result perf = GameMath::Calculate(Car(), _Engine, _Induction, _Transmission, _Suspension, _Brakes, _Tires);
++		if( perf.topspeed == _topspeed && perf.acceleration == _acceleration && perf.handling == _handling )
++			AddSolution(_Engine, _Induction, _Transmission, _Suspension, _Brakes, _Tires);
++		return CanReachAggregate(_Topspeed, _Acceleration, _Handling) ? cSMALLER : cLARGER;
++	}
++
+ 	if( _Topspeed == _pTopspeed && _Acceleration == _pAcceleration && _Handling == _pHandling )
+ 	{
+ 		AddSolution(_Engine, _Induction, _Transmission, _Suspension, _Brakes, _Tires);
+ 		return cEQUAL;
+ 	}
+ 	else if( _Topspeed > _pTopspeed || _Acceleration > _pAcceleration || _Handling > _pHandling )
+-	{
+ 		return cLARGER;
+-	}
+-	else
+-	{
+-		return cSMALLER;
+-	}
++	return cSMALLER;
+ }
+ void TrdAnalyze::ComputeTargetPercents()
+ {
++	if( Car() && Car()->HasNFSWPerformanceModel() )
++	{
++		_pTopspeed = _pAcceleration = _pHandling = 0;
++		_aggregateTargets.clear();
++		return;
++	}
+ 	_pTopspeed = utils::ComputePercentI(1, Car()->Topspeed(), _topspeed);
+ 	_pAcceleration = utils::ComputePercentI(1, Car()->Acceleration(), _acceleration);
+ 	_pHandling = utils::ComputePercentI(1, Car()->Handling(), _handling);
+ }
+ bool TrdAnalyze::CheckTargetPercents()
+ {
++	if( Car() && Car()->HasNFSWPerformanceModel() )
++		return true;
++
+ 	const tValue topspeed = utils::ComputeStatI(1, Car()->Topspeed(), _pTopspeed);
+ 	const tValue accleration = utils::ComputeStatI(1, Car()->Acceleration(), _pAcceleration);
+ 	const tValue handling = utils::ComputeStatI(1, Car()->Handling(), _pHandling);
+ 
+ 	return ( topspeed == _topspeed ) && ( accleration == _acceleration ) && ( handling == _handling );
++}
++void TrdAnalyze::BuildAggregateTargets()
++{
++	_aggregateTargets.clear();
++	if( !Car() || !Car()->HasNFSWPerformanceModel() )
++		return;
++
++	const QVector< const CPart* >* lists[6] = { Engines(), Inductions(), Transmissions(), Suspensions(), Brakes(), Tires() };
++	int minT = 0, maxT = 0, minA = 0, maxA = 0, minH = 0, maxH = 0;
++	for(int i = 0; i < 6; ++i)
++	{
++		if( !lists[i] || lists[i]->isEmpty() ) return;
++		int loT = 1000000, loA = 1000000, loH = 1000000;
++		int hiT = -1000000, hiA = -1000000, hiH = -1000000;
++		for(int p = 0; p < lists[i]->size(); ++p)
++		{
++			const CPart* part = lists[i]->at(p);
++			loT = qMin(loT, (int)part->Topspeed()); hiT = qMax(hiT, (int)part->Topspeed());
++			loA = qMin(loA, (int)part->Acceleration()); hiA = qMax(hiA, (int)part->Acceleration());
++			loH = qMin(loH, (int)part->Handling()); hiH = qMax(hiH, (int)part->Handling());
++		}
++		minT += loT; maxT += hiT; minA += loA; maxA += hiA; minH += loH; maxH += hiH;
++	}
++	for(int h = minH; h <= maxH && GoOn(); ++h)
++		for(int a = minA; a <= maxA; ++a)
++			for(int t = minT; t <= maxT; ++t)
++			{
++				const GameMath::Result perf = GameMath::CalculateFromSums(Car(), t, a, h);
++				if( qAbs((int)perf.topspeed - (int)_topspeed) <= 1 &&
++					qAbs((int)perf.acceleration - (int)_acceleration) <= 1 &&
++					qAbs((int)perf.handling - (int)_handling) <= 1 )
++				{
++					AggregateTarget x; x.topspeed=t; x.acceleration=a; x.handling=h;
++					_aggregateTargets.append(x);
++				}
++			}
++}
++bool TrdAnalyze::CanReachAggregate(int _Topspeed, int _Acceleration, int _Handling) const
++{
++	for(int i = 0; i < _aggregateTargets.size(); ++i)
++	{
++		const AggregateTarget& x = _aggregateTargets.at(i);
++		if( x.topspeed >= _Topspeed && x.acceleration >= _Acceleration && x.handling >= _Handling ) return true;
++	}
++	return false;
+ }
+@@ -311,11 +386,19 @@
+ {
+ 	StartRun();
+-	if( !Car() || Car()->Attribute(aTOPSPEED) > _topspeed || Car()->Attribute(aACCELERATION) > _acceleration
+-			|| Car()->Attribute(aHANDLING) > _handling )
++	if( !Car() )
+ 		return;
+-
++	if( !Car()->HasNFSWPerformanceModel() &&
++			( Car()->Attribute(aTOPSPEED) > _topspeed || Car()->Attribute(aACCELERATION) > _acceleration
++			|| Car()->Attribute(aHANDLING) > _handling ) )
++		return;
+ 	ComputeTargetPercents();
++	BuildAggregateTargets();
++	if( Car()->HasNFSWPerformanceModel() && _aggregateTargets.isEmpty() )
++		return;
+ 	if( CheckTargetPercents() )
+ 	{
+--- a/src/Tab/Threads/TrdAnalyze.h
++++ b/src/Tab/Threads/TrdAnalyze.h
+@@ -22,6 +22,7 @@
+ #include "Trd.h"
+ #include "../../Classes/TypeDefinitions.h"
++#include <QVector>
+@@ -39,6 +40,15 @@
+ 		void ComputeTargetPercents();
+ 		bool CheckTargetPercents();
++		struct AggregateTarget
++		{
++			int topspeed;
++			int acceleration;
++			int handling;
++		};
++		void BuildAggregateTargets();
++		bool CanReachAggregate(int _Topspeed, int _Acceleration, int _Handling) const;
+@@ -60,6 +70,7 @@
+ 		tPercent _pTopspeed;
+ 		tPercent _pAcceleration;
+ 		tPercent _pHandling;
++		QVector< AggregateTarget > _aggregateTargets;
+ };
