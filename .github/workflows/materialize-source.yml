@@ -42,8 +42,7 @@ jobs:
           project_file="$(find .materialize-source/extracted -type f -name QtNFSWTuningCalculator.pro -print -quit)"
           if [ -z "$project_file" ]; then
             echo "QtNFSWTuningCalculator.pro was not found in the RAR archive."
-            echo "Nested archives:"
-            find .materialize-source/extracted -type f \\( -iname '*.rar' -o -iname '*.zip' -o -iname '*.7z' \\) -print || true
+            echo "No project file found after extraction."
             exit 1
           fi
           source_root="$(dirname "$project_file")"
